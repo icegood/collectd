@@ -32,6 +32,8 @@
 
 #include "plugin.h"
 
+#include <string.h>
+
 #if HAVE_PWD_H
 #include <pwd.h>
 #endif

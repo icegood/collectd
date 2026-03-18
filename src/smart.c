@@ -169,6 +169,25 @@ static void smart_submit(const char *dev, const char *type,
   plugin_dispatch_values(&vl);
 }
 
+static uint64_t raw_value(const SkSmartAttributeParsedData *a) {
+  return ((uint64_t) a->raw[0]) |
+                (((uint64_t) a->raw[1]) << 8) |
+                (((uint64_t) a->raw[2]) << 16) |
+                (((uint64_t) a->raw[3]) << 24) |
+                (((uint64_t) a->raw[4]) << 32) |
+                (((uint64_t) a->raw[5]) << 40);
+}
+
+static const char* get_attribute_name(const SkSmartAttributeParsedData *a) {
+  static char buf[64];
+  if (!strncmp(a->name, "attribute-", 10)) {
+    return a->name;
+  } else {
+    ssnprintf(buf, sizeof(buf), "%u-%s", a->id, a->name);
+    return buf;
+  }
+}
+
 static void handle_attribute(SkDisk *d, const SkSmartAttributeParsedData *a,
                              void *userdata) {
   char const *name = userdata;
@@ -182,6 +201,7 @@ static void handle_attribute(SkDisk *d, const SkSmartAttributeParsedData *a,
       {.gauge = a->worst_value},
       {.gauge = a->threshold_valid ? a->threshold : 0},
       {.gauge = a->pretty_value},
+      {.gauge = raw_value(a)},
   };
 
   vl.values = values;
@@ -189,7 +209,8 @@ static void handle_attribute(SkDisk *d, const SkSmartAttributeParsedData *a,
   sstrncpy(vl.plugin, "smart", sizeof(vl.plugin));
   sstrncpy(vl.plugin_instance, name, sizeof(vl.plugin_instance));
   sstrncpy(vl.type, "smart_attribute", sizeof(vl.type));
-  sstrncpy(vl.type_instance, a->name, sizeof(vl.type_instance));
+
+  sstrncpy(vl.type_instance, get_attribute_name(a), sizeof(vl.type_instance));
 
   plugin_dispatch_values(&vl);
 
@@ -198,7 +219,7 @@ static void handle_attribute(SkDisk *d, const SkSmartAttributeParsedData *a,
                             "smart_attribute", "",       NULL};
     sstrncpy(notif.host, hostname_g, sizeof(notif.host));
     sstrncpy(notif.plugin_instance, name, sizeof(notif.plugin_instance));
-    sstrncpy(notif.type_instance, a->name, sizeof(notif.type_instance));
+    sstrncpy(notif.type_instance, get_attribute_name(a), sizeof(notif.type_instance));
     ssnprintf(notif.message, sizeof(notif.message),
               "attribute %s is below allowed threshold (%d < %d)", a->name,
               a->current_value, a->threshold);
@@ -503,30 +524,6 @@ static void smart_read_sata_disk(SkDisk *d, char const *name) {
     ERROR("smart plugin: unable to parse SMART data for disk %s.", name);
     return;
   }
-
-  /* Get some specific values */
-  uint64_t value;
-  if (sk_disk_smart_get_power_on(d, &value) >= 0)
-    smart_submit(name, "smart_poweron", "", ((gauge_t)value) / 1000.);
-  else
-    DEBUG("smart plugin: unable to get milliseconds since power on for %s.",
-          name);
-
-  if (sk_disk_smart_get_power_cycle(d, &value) >= 0)
-    smart_submit(name, "smart_powercycles", "", (gauge_t)value);
-  else
-    DEBUG("smart plugin: unable to get number of power cycles for %s.", name);
-
-  if (sk_disk_smart_get_bad(d, &value) >= 0)
-    smart_submit(name, "smart_badsectors", "", (gauge_t)value);
-  else
-    DEBUG("smart plugin: unable to get number of bad sectors for %s.", name);
-
-  if (sk_disk_smart_get_temperature(d, &value) >= 0)
-    smart_submit(name, "smart_temperature", "",
-                 ((gauge_t)value) / 1000. - 273.15);
-  else
-    DEBUG("smart plugin: unable to get temperature for %s.", name);
 
   /* Grab all attributes */
   if (sk_disk_smart_parse_attributes(d, handle_attribute, (void *)name) < 0) {

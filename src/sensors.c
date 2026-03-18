@@ -65,7 +65,7 @@ typedef struct featurelist {
 static char *conffile = SENSORS_CONF_PATH;
 /* #endif SENSORS_API_VERSION < 0x400 */
 
-#elif (SENSORS_API_VERSION >= 0x400)
+#else /* SENSORS_API_VERSION >= 0x400 */
 typedef struct featurelist {
   const sensors_chip_name *chip;
   const sensors_feature *feature;
@@ -232,7 +232,7 @@ static int sensors_load_conf(void) {
   }   /* while sensors_get_detected_chips */
       /* #endif SENSORS_API_VERSION < 0x400 */
 
-#elif (SENSORS_API_VERSION >= 0x400)
+#else /* SENSORS_API_VERSION >= 0x400 */
   chip_num = 0;
   while ((chip = sensors_get_detected_chips(NULL, &chip_num)) != NULL) {
     const sensors_feature *feature;
@@ -242,17 +242,34 @@ static int sensors_load_conf(void) {
       const sensors_subfeature *subfeature;
       int subfeature_num = 0;
 
-      /* Only handle voltage, fanspeeds and temperatures */
-      if ((feature->type != SENSORS_FEATURE_IN) &&
-          (feature->type != SENSORS_FEATURE_FAN) &&
-          (feature->type != SENSORS_FEATURE_TEMP) &&
+      /* Handle all collectable feature types - flat checks per API version */
+      int supported = 0;
+      
+      if ((feature->type == SENSORS_FEATURE_IN) ||
+          (feature->type == SENSORS_FEATURE_FAN) ||
+          (feature->type == SENSORS_FEATURE_TEMP) ||
+          (feature->type == SENSORS_FEATURE_POWER)) {
+        supported = 1;
+      }
 #if SENSORS_API_VERSION >= 0x402
-          (feature->type != SENSORS_FEATURE_CURR) &&
+      else if (feature->type == SENSORS_FEATURE_CURR) {
+        supported = 1;
+      }
 #endif
 #if SENSORS_API_VERSION >= 0x431
-          (feature->type != SENSORS_FEATURE_HUMIDITY) &&
+      else if (feature->type == SENSORS_FEATURE_HUMIDITY) {
+        supported = 1;
+      }
 #endif
-          (feature->type != SENSORS_FEATURE_POWER)) {
+#if SENSORS_API_VERSION >= 0x500
+      else if (feature->type == SENSORS_FEATURE_ENERGY ||
+               feature->type == SENSORS_FEATURE_PWM ||
+               feature->type == SENSORS_FEATURE_INTRUSION) {
+        supported = 1;
+      }
+#endif
+
+      if (!supported) {
         DEBUG("sensors plugin: sensors_load_conf: "
               "Ignoring feature `%s', "
               "because its type is not "
@@ -261,20 +278,59 @@ static int sensors_load_conf(void) {
         continue;
       }
 
+      /* Iterate through subfeatures */
       while ((subfeature = sensors_get_all_subfeatures(
                   chip, feature, &subfeature_num)) != NULL) {
         featurelist_t *fl;
+        int should_collect = 0;
 
-        if ((subfeature->type != SENSORS_SUBFEATURE_IN_INPUT) &&
-            (subfeature->type != SENSORS_SUBFEATURE_FAN_INPUT) &&
-            (subfeature->type != SENSORS_SUBFEATURE_TEMP_INPUT) &&
+        /* Collect INPUT-type subfeatures for each feature type */
+        switch (feature->type) {
+        case SENSORS_FEATURE_IN:
+
+          should_collect = (subfeature->type == SENSORS_SUBFEATURE_IN_INPUT);
+          break;
+        case SENSORS_FEATURE_FAN:
+          should_collect = (subfeature->type == SENSORS_SUBFEATURE_FAN_INPUT);
+          break;
+        case SENSORS_FEATURE_TEMP:
+          should_collect = (subfeature->type == SENSORS_SUBFEATURE_TEMP_INPUT);
+          break;
+        case SENSORS_FEATURE_POWER:
+          should_collect = (subfeature->type == SENSORS_SUBFEATURE_POWER_INPUT) ||
+                           (subfeature->type == SENSORS_SUBFEATURE_POWER_AVERAGE);
+          break;
 #if SENSORS_API_VERSION >= 0x402
-            (subfeature->type != SENSORS_SUBFEATURE_CURR_INPUT) &&
+        case SENSORS_FEATURE_CURR:
+          should_collect =
+              (subfeature->type == SENSORS_SUBFEATURE_CURR_INPUT);
+          break;
 #endif
 #if SENSORS_API_VERSION >= 0x431
-            (subfeature->type != SENSORS_SUBFEATURE_HUMIDITY_INPUT) &&
+        case SENSORS_FEATURE_HUMIDITY:
+          should_collect =
+              (subfeature->type == SENSORS_SUBFEATURE_HUMIDITY_INPUT);
+          break;
 #endif
-            (subfeature->type != SENSORS_SUBFEATURE_POWER_INPUT))
+#if SENSORS_API_VERSION >= 0x500
+        case SENSORS_FEATURE_ENERGY:
+          should_collect =
+              (subfeature->type == SENSORS_SUBFEATURE_ENERGY_INPUT);
+          break;
+        case SENSORS_FEATURE_PWM:
+          should_collect = (subfeature->type == SENSORS_SUBFEATURE_PWM_IO);
+          break;
+        case SENSORS_FEATURE_INTRUSION:
+          should_collect =
+              (subfeature->type == SENSORS_SUBFEATURE_INTRUSION_ALARM);
+          break;
+#endif
+        default:
+          should_collect = 0;
+          break;
+        }
+
+        if (!should_collect)
           continue;
 
         fl = calloc(1, sizeof(*fl));
@@ -295,7 +351,7 @@ static int sensors_load_conf(void) {
       } /* while (subfeature) */
     }   /* while (feature) */
   }     /* while (chip) */
-#endif /* (SENSORS_API_VERSION >= 0x400) */
+#endif /* SENSORS_API_VERSION >= 0x400 */
 
   if (first_feature == NULL) {
     sensors_cleanup();
@@ -370,7 +426,7 @@ static int sensors_read(void) {
   } /* for fl = first_feature .. NULL */
     /* #endif SENSORS_API_VERSION < 0x400 */
 
-#elif (SENSORS_API_VERSION >= 0x400)
+#else /* SENSORS_API_VERSION >= 0x400 */
   for (featurelist_t *fl = first_feature; fl != NULL; fl = fl->next) {
     double value;
     int status;
@@ -396,28 +452,50 @@ static int sensors_read(void) {
       sstrncpy(type_instance, fl->feature->name, sizeof(type_instance));
     }
 
-    if (fl->feature->type == SENSORS_FEATURE_IN)
+    /* Map feature type to collectd type name */
+    switch (fl->feature->type) {
+    case SENSORS_FEATURE_IN:
       type = "voltage";
-    else if (fl->feature->type == SENSORS_FEATURE_FAN)
+      break;
+    case SENSORS_FEATURE_FAN:
       type = "fanspeed";
-    else if (fl->feature->type == SENSORS_FEATURE_TEMP)
+      break;
+    case SENSORS_FEATURE_TEMP:
       type = "temperature";
-    else if (fl->feature->type == SENSORS_FEATURE_POWER)
+      break;
+    case SENSORS_FEATURE_POWER:
       type = "power";
+      break;
 #if SENSORS_API_VERSION >= 0x402
-    else if (fl->feature->type == SENSORS_FEATURE_CURR)
+    case SENSORS_FEATURE_CURR:
       type = "current";
+      break;
 #endif
 #if SENSORS_API_VERSION >= 0x431
-    else if (fl->feature->type == SENSORS_FEATURE_HUMIDITY)
+    case SENSORS_FEATURE_HUMIDITY:
       type = "humidity";
+      break;
 #endif
-    else
+#if SENSORS_API_VERSION >= 0x500
+    case SENSORS_FEATURE_ENERGY:
+      type = "energy";
+      break;
+    case SENSORS_FEATURE_PWM:
+      type = "pwm";
+      break;
+    case SENSORS_FEATURE_INTRUSION:
+      type = "intrusion";
+      break;
+#endif
+    default:
+      DEBUG("sensors plugin: Unknown feature type %d for %s", fl->feature->type,
+            fl->feature->name);
       continue;
+    }
 
     sensors_submit(plugin_instance, type, type_instance, value);
   } /* for fl = first_feature .. NULL */
-#endif /* (SENSORS_API_VERSION >= 0x400) */
+#endif /* SENSORS_API_VERSION >= 0x400 */
 
   return 0;
 } /* int sensors_read */
