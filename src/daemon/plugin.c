@@ -55,6 +55,7 @@
 #endif
 
 #include <dlfcn.h>
+#include <time.h>
 
 /*
  * Private structures
@@ -822,6 +823,14 @@ static void *plugin_write_thread(void __attribute__((unused)) * args) /* {{{ */
 
 static void start_write_threads(size_t num) /* {{{ */
 {
+  {
+    struct timespec ts;
+    ts.tv_sec = 0;
+    ts.tv_nsec = 300000000;
+    // wait untill read threads propagate them values in the start
+    nanosleep(&ts, NULL);
+  }
+
   if (write_threads != NULL)
     return;
 
@@ -1708,8 +1717,6 @@ EXPORT int plugin_init_all(void) {
     le = le->next;
   }
 
-  start_write_threads((size_t)write_threads_num);
-
   max_read_interval =
       global_option_get_time("MaxReadInterval", DEFAULT_MAX_READ_INTERVAL);
 
@@ -1723,6 +1730,7 @@ EXPORT int plugin_init_all(void) {
     if (num != -1)
       start_read_threads((num > 0) ? ((size_t)num) : 5);
   }
+  start_write_threads((size_t)write_threads_num);
   return ret;
 } /* void plugin_init_all */
 
